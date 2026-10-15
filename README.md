@@ -1,1 +1,131 @@
-# MCP-NGROKServer
+# Build Your Own: MCP File Server (Midterms PT 1)
+
+A sandboxed Model Context Protocol (MCP) file server built with Node.js, TypeScript and **Streamable HTTP** (legacy SSE is kept for older clients). It acts as shared memory for AI agents across sessions using four handoff files in `workspace/`.
+
+**What's new in v2**
+
+| Area | Change |
+|---|---|
+| Security | Shell-free git (`execFile`), bearer-token auth, separator-aware sandbox check, symlink and `.git` protection, loopback-only binding |
+| Reliability | One MCP server + transport per session (multiple agents can connect at once), correct body handling, graceful shutdown |
+| Tools | Schemas defined once (no drift between validation and advertised definitions), literal `str_replace`, auto-created parent folders, size limits, protected handoff files |
+| Setup | `git init` is automatic, `npm run setup` generates your token, `npm test` verifies everything |
+
+---
+
+## Step 0: Check installed software
+
+Open **Command Prompt** or **Terminal**:
+
+| Tool | Check | Expected | If missing |
+|---|---|---|---|
+| Node.js | `node -v` | `v20.x` or newer | [nodejs.org/en/download](https://nodejs.org/en/download) |
+| Git | `git --version` | `git version 2.x.x` | [git-scm.com](https://git-scm.com/downloads) |
+| PM2 | `pm2 -v` | `5.x.x` | `npm install -g pm2` |
+| ngrok | `ngrok -v` | `ngrok version 3.x.x` | [ngrok.com/download](https://ngrok.com/download), then `ngrok config add-authtoken YOUR_TOKEN` |
+
+---
+
+## Part 1: One-time setup
+
+From the project root:
+
+```
+npm install
+npm run setup
+npm run build
+```
+
+`npm run setup` creates a `.env` file containing a random `MCP_AUTH_TOKEN`. Keep it private. (You no longer need to run `git init` by hand; the server does it on first start.)
+
+Optional: `npm test` boots a throwaway copy of the server and runs 25 checks (tools, sessions, auth, sandbox escapes, injection attempts).
+
+---
+
+## Part 2: Routine launch
+
+1. Start the server:
+   ```
+   npm run pm2:start
+   ```
+2. Expose it over HTTPS:
+   ```
+   ngrok http 127.0.0.1:3000
+   ```
+3. Build your connector URL from the `Forwarding` line (e.g. `https://abcd-123.ngrok-free.dev`) and the token in your `.env`:
+
+   ```
+   https://abcd-123.ngrok-free.dev/mcp?token=YOUR_MCP_AUTH_TOKEN
+   ```
+
+   Clients that support custom headers can use the plain `/mcp` URL with `Authorization: Bearer YOUR_MCP_AUTH_TOKEN` instead (preferred, since URLs end up in logs).
+
+   Older clients that only speak SSE: use `/sse` instead of `/mcp` (same token).
+
+Free ngrok URLs change on every restart, so update the connector URL when you relaunch.
+
+---
+
+## Part 3: Testing state handoff
+
+1. Connect your agent using the URL above.
+2. **Session 1:** ask it to inspect the workspace, update `PROJECT_STATE`, and log its plan in `PLAN_LOG`.
+3. **Session 2:** start a fresh agent session on the same URL and ask it to read `PROJECT_STATE` to confirm the state persisted.
+
+Both sessions can even be connected at the same time.
+
+---
+
+## Tools (8)
+
+| Tool | Purpose |
+|---|---|
+| `list_files` | List a directory (folders end in `/`) |
+| `read_file` | Read a text file (max 1 MB) |
+| `write_file` | Create/overwrite a file; creates parent folders (max 1 MB) |
+| `str_replace` | Literal find/replace; errors on no match or ambiguous match unless `replace_all=true` |
+| `delete_file` | Delete a file (handoff files are protected) |
+| `git_status` | Short status of the workspace repo |
+| `git_add` | Stage a path (`.` for all) |
+| `git_commit` | Commit staged changes (hooks are never run) |
+
+## Handoff protocol files (`workspace/`)
+
+* **`PROJECT_STATE`**: current phase and progress
+* **`PLAN_LOG`**: step-by-step plans written by agents
+* **`CHECKPOINTS`**: completed milestones
+* **`DECISIONS`**: architecture and design choices
+
+These can be edited freely but not deleted.
+
+---
+
+## Security model
+
+* Binds to `127.0.0.1` only; ngrok is the sole way in.
+* Every `/mcp` and `/sse` request needs the token. `/health` is the only public route.
+* All paths are resolved against the workspace root, then checked again after resolving symlinks. `.git/` is off limits to file tools.
+* Git runs without a shell, so file names and commit messages can't inject commands.
+* The server refuses to start without `MCP_AUTH_TOKEN` (override with `MCP_AUTH_DISABLED=true` for local-only testing; never combine that with ngrok).
+
+Rotate the token any time by editing `.env` and running `pm2 restart mcp-server --update-env`.
+
+## Helper commands
+
+| Command | What it does |
+|---|---|
+| `npx pm2 status` | Is the server online? |
+| `npm run pm2:logs` | Tail server logs |
+| `npm run pm2:stop` | Stop the server |
+| `npm run dev` | Run with `tsx` (no build step) |
+| `curl http://127.0.0.1:3000/health` | Quick local health check |
+
+## Configuration (`.env`)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MCP_AUTH_TOKEN` | *(required)* | Generated by `npm run setup` |
+| `PORT` | `3000` | |
+| `HOST` | `127.0.0.1` | Leave as is when using ngrok |
+| `WORKSPACE_ROOT` | `<project>/workspace` | Absolute path if you want it elsewhere |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `MCP Agent` / `agent@mcp.local` | Identity for agent commits |
